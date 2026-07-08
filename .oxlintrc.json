@@ -5,5 +5,9 @@
     "suspicious": "error",
     "perf": "warn"
   },
-  "ignorePatterns": ["node_modules", "dist"]
+  "rules": {
+    "eslint/no-underscore-dangle": ["error", { "allow": ["_tag"] }],
+    "unicorn/prefer-add-event-listener": "off"
+  },
+  "ignorePatterns": ["node_modules", "dist", ".repos"]
 }

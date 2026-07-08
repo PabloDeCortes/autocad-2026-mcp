@@ -1,5 +1,13 @@
-import { BunRuntime } from "@effect/platform-bun";
+import { BunContext, BunRuntime } from "@effect/platform-bun";
 import { Layer } from "effect";
+import { AutocadBridge } from "./bridge";
+import { BridgeConfig } from "./config";
 import { AutocadMcp } from "./server";
 
-BunRuntime.runMain(Layer.launch(AutocadMcp.Default));
+const MainLayer = AutocadMcp.Default.pipe(
+  Layer.provide(AutocadBridge.Default),
+  Layer.provide(BridgeConfig.Default),
+  Layer.provide(BunContext.layer),
+);
+
+BunRuntime.runMain(Layer.launch(MainLayer));
