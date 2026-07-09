@@ -219,7 +219,7 @@
           (setq blocks (cons (list name bcount (cond ((cdr (assoc name byBlock))) (0))) blocks))))
     (setq bd (tblnext "BLOCK")))
   (list total (reverse byType) (reverse byLayer)
-        (list (getvar "EXTMIN") (getvar "EXTMAX"))
+        (if (> total 0) (list (getvar "EXTMIN") (getvar "EXTMAX")) nil)
         (reverse blocks)))
 
 (defun mcp:block-definition (name limit / d base ent total out)
@@ -264,6 +264,20 @@
   (foreach h handles
     (vla-Move (mcp:vla-of h) origin (mcp:point3d delta)))
   (length handles))
+
+(defun mcp:dim-aligned (pa pb loc txt layer / before oldlayer oldos e)
+  (if layer (mcp:require-layer layer))
+  (setq before (entlast) oldlayer (getvar "CLAYER") oldos (getvar "OSMODE"))
+  (setvar "OSMODE" 0)
+  (if layer (setvar "CLAYER" layer))
+  (if txt
+      (command "_.DIMALIGNED" pa pb "_T" txt loc)
+      (command "_.DIMALIGNED" pa pb loc))
+  (setvar "CLAYER" oldlayer)
+  (setvar "OSMODE" oldos)
+  (setq e (entlast))
+  (if (or (null e) (eq e before)) (mcp:throw "dimension creation failed"))
+  (mcp:handle-of e))
 
 (defun mcp:copy (handles delta / origin out new)
   (setq origin (vlax-3d-point 0 0 0) out nil)
@@ -315,6 +329,6 @@
                      (mcp:point3d pt) name scale scale scale rot))
   (mcp:handle-of (vlax-vla-object->ename obj)))
 
-(setq mcp:api 4)
+(setq mcp:api 5)
 
 (princ)

@@ -1,4 +1,5 @@
 import { Effect, Schema } from "effect";
+import { absurd } from "effect/Function";
 import { AutocadBridge } from "../bridge";
 import {
   cons,
@@ -49,100 +50,225 @@ const madeEntity = (layer: string | undefined, dxfGroups: ReadonlyArray<string>)
     return { handle };
   });
 
+const LineSpec = Schema.Struct({ start: Point, end: Point, layer: OptionalLayer });
+
+const CircleSpec = Schema.Struct({
+  center: Point,
+  radius: Schema.Number.pipe(Schema.positive()),
+  layer: OptionalLayer,
+});
+
+const ArcSpec = Schema.Struct({
+  center: Point,
+  radius: Schema.Number.pipe(Schema.positive()),
+  startAngle: AngleDegrees,
+  endAngle: AngleDegrees,
+  layer: OptionalLayer,
+});
+
+const PolylineSpec = Schema.Struct({
+  points: Schema.Array(Point).pipe(Schema.minItems(2)),
+  closed: Schema.optionalWith(Schema.Boolean, { default: () => false }),
+  width: Schema.optional(
+    Schema.Number.pipe(Schema.nonNegative()).annotations({
+      description: "Constant line width in drawing units, e.g. for thick pipe runs",
+    }),
+  ),
+  layer: OptionalLayer,
+});
+
+const textJustifications = {
+  left: undefined,
+  center: [1, 0],
+  right: [2, 0],
+  middle: [1, 2],
+} as const;
+
+const TextSpec = Schema.Struct({
+  position: Point,
+  text: Schema.NonEmptyString,
+  height: Schema.Number.pipe(Schema.positive()),
+  rotation: Schema.optionalWith(AngleDegrees, { default: () => 0 }),
+  justification: Schema.optionalWith(Schema.Literal("left", "center", "right", "middle"), {
+    default: () => "left",
+  }).annotations({
+    description:
+      "How the text relates to position: left = baseline start, center/right = horizontal alignment, middle = centered both ways",
+  }),
+  layer: OptionalLayer,
+});
+
+const lineGroups = (spec: typeof LineSpec.Type): ReadonlyArray<string> => [
+  cons(0, `"LINE"`),
+  ...layerGroups(spec.layer),
+  cons(10, lispPoint(spec.start)),
+  cons(11, lispPoint(spec.end)),
+];
+
+const circleGroups = (spec: typeof CircleSpec.Type): ReadonlyArray<string> => [
+  cons(0, `"CIRCLE"`),
+  ...layerGroups(spec.layer),
+  cons(10, lispPoint(spec.center)),
+  cons(40, lispReal(spec.radius)),
+];
+
+const arcGroups = (spec: typeof ArcSpec.Type): ReadonlyArray<string> => [
+  cons(0, `"ARC"`),
+  ...layerGroups(spec.layer),
+  cons(10, lispPoint(spec.center)),
+  cons(40, lispReal(spec.radius)),
+  cons(50, lispReal(spec.startAngle)),
+  cons(51, lispReal(spec.endAngle)),
+];
+
+const polylineGroups = (spec: typeof PolylineSpec.Type): ReadonlyArray<string> => [
+  cons(0, `"LWPOLYLINE"`),
+  cons(100, `"AcDbEntity"`),
+  ...layerGroups(spec.layer),
+  cons(100, `"AcDbPolyline"`),
+  cons(90, lispInteger(spec.points.length)),
+  cons(70, lispInteger(spec.closed ? 1 : 0)),
+  ...(spec.width === undefined ? [] : [cons(43, lispReal(spec.width))]),
+  ...spec.points.map((point) => cons(10, lispPoint2d(point))),
+];
+
+const textGroups = (spec: typeof TextSpec.Type): ReadonlyArray<string> => {
+  const alignment = textJustifications[spec.justification];
+  return [
+    cons(0, `"TEXT"`),
+    ...layerGroups(spec.layer),
+    cons(10, lispPoint(spec.position)),
+    cons(40, lispReal(spec.height)),
+    cons(1, lispString(spec.text)),
+    cons(50, lispReal(spec.rotation)),
+    ...(alignment === undefined
+      ? []
+      : [
+          cons(72, lispInteger(alignment[0])),
+          cons(73, lispInteger(alignment[1])),
+          cons(11, lispPoint(spec.position)),
+        ]),
+  ];
+};
+
 const createLine = makeTool({
   name: "create_line",
   description: "Create a line between two points. Returns the handle of the new entity.",
-  input: Schema.Struct({ start: Point, end: Point, layer: OptionalLayer }),
-  handler: ({ start, end, layer }) =>
-    madeEntity(layer, [
-      cons(0, `"LINE"`),
-      ...layerGroups(layer),
-      cons(10, lispPoint(start)),
-      cons(11, lispPoint(end)),
-    ]),
+  input: LineSpec,
+  handler: (spec) => madeEntity(spec.layer, lineGroups(spec)),
 });
 
 const createCircle = makeTool({
   name: "create_circle",
   description:
     "Create a circle from a center point and radius. Returns the handle of the new entity.",
-  input: Schema.Struct({
-    center: Point,
-    radius: Schema.Number.pipe(Schema.positive()),
-    layer: OptionalLayer,
-  }),
-  handler: ({ center, radius, layer }) =>
-    madeEntity(layer, [
-      cons(0, `"CIRCLE"`),
-      ...layerGroups(layer),
-      cons(10, lispPoint(center)),
-      cons(40, lispReal(radius)),
-    ]),
+  input: CircleSpec,
+  handler: (spec) => madeEntity(spec.layer, circleGroups(spec)),
 });
 
 const createArc = makeTool({
   name: "create_arc",
   description:
     "Create a circular arc from a center point, radius, and start/end angles in degrees (counterclockwise from the positive X axis). Returns the handle of the new entity.",
-  input: Schema.Struct({
-    center: Point,
-    radius: Schema.Number.pipe(Schema.positive()),
-    startAngle: AngleDegrees,
-    endAngle: AngleDegrees,
-    layer: OptionalLayer,
-  }),
-  handler: ({ center, radius, startAngle, endAngle, layer }) =>
-    madeEntity(layer, [
-      cons(0, `"ARC"`),
-      ...layerGroups(layer),
-      cons(10, lispPoint(center)),
-      cons(40, lispReal(radius)),
-      cons(50, lispReal(startAngle)),
-      cons(51, lispReal(endAngle)),
-    ]),
+  input: ArcSpec,
+  handler: (spec) => madeEntity(spec.layer, arcGroups(spec)),
 });
 
 const createPolyline = makeTool({
   name: "create_polyline",
   description:
-    "Create a 2D lightweight polyline through the given points (z is ignored). Returns the handle of the new entity.",
-  input: Schema.Struct({
-    points: Schema.Array(Point).pipe(Schema.minItems(2)),
-    closed: Schema.optionalWith(Schema.Boolean, { default: () => false }),
-    layer: OptionalLayer,
-  }),
-  handler: ({ points, closed, layer }) =>
-    madeEntity(layer, [
-      cons(0, `"LWPOLYLINE"`),
-      cons(100, `"AcDbEntity"`),
-      ...layerGroups(layer),
-      cons(100, `"AcDbPolyline"`),
-      cons(90, lispInteger(points.length)),
-      cons(70, lispInteger(closed ? 1 : 0)),
-      ...points.map((point) => cons(10, lispPoint2d(point))),
-    ]),
+    "Create a 2D lightweight polyline through the given points (z is ignored), optionally closed and with a constant width. Returns the handle of the new entity.",
+  input: PolylineSpec,
+  handler: (spec) => madeEntity(spec.layer, polylineGroups(spec)),
 });
 
 const createText = makeTool({
   name: "create_text",
   description:
-    "Create a single-line text entity at a position. Returns the handle of the new entity.",
+    "Create a single-line text entity at a position, with optional rotation and justification. Returns the handle of the new entity.",
+  input: TextSpec,
+  handler: (spec) => madeEntity(spec.layer, textGroups(spec)),
+});
+
+const EntitySpec = Schema.Union(
+  Schema.Struct({ type: Schema.Literal("line"), ...LineSpec.fields }),
+  Schema.Struct({ type: Schema.Literal("circle"), ...CircleSpec.fields }),
+  Schema.Struct({ type: Schema.Literal("arc"), ...ArcSpec.fields }),
+  Schema.Struct({ type: Schema.Literal("polyline"), ...PolylineSpec.fields }),
+  Schema.Struct({ type: Schema.Literal("text"), ...TextSpec.fields }),
+);
+
+const entitySpecGroups = (spec: typeof EntitySpec.Type): ReadonlyArray<string> => {
+  switch (spec.type) {
+    case "line":
+      return lineGroups(spec);
+    case "circle":
+      return circleGroups(spec);
+    case "arc":
+      return arcGroups(spec);
+    case "polyline":
+      return polylineGroups(spec);
+    case "text":
+      return textGroups(spec);
+    default:
+      return absurd(spec);
+  }
+};
+
+const createEntities = makeTool({
+  name: "create_entities",
+  description:
+    "Create many entities (lines, circles, arcs, polylines, texts) in one call — one AutoCAD round-trip instead of one per entity, so use this whenever creating more than a couple of entities. Returns the handles of the new entities in input order.",
   input: Schema.Struct({
-    position: Point,
-    text: Schema.NonEmptyString,
-    height: Schema.Number.pipe(Schema.positive()),
-    rotation: Schema.optionalWith(AngleDegrees, { default: () => 0 }),
+    entities: Schema.Array(EntitySpec).pipe(Schema.minItems(1), Schema.maxItems(500)),
+  }),
+  handler: ({ entities }) =>
+    Effect.gen(function* () {
+      const bridge = yield* AutocadBridge;
+      const layers = [...new Set(entities.map((entity) => entity.layer))];
+      const result = yield* bridge.evaluate(
+        progn(
+          ...layers.flatMap(requireLayerExpressions),
+          `(list ${entities
+            .map(
+              (entity) =>
+                `(mcp:made-entity (entmakex (list ${entitySpecGroups(entity).join(" ")})))`,
+            )
+            .join(" ")})`,
+        ),
+      );
+      const handles = yield* decodeBridgeResult(LispList(Schema.String))(result);
+      return { created: handles.length, handles };
+    }),
+});
+
+const createDimension = makeTool({
+  name: "create_dimension",
+  description:
+    "Create an aligned linear dimension between two points, with the dimension line placed through linePosition. textOverride replaces the measured value — use it when the drawing is schematic rather than to scale. Uses the current dimension style. Returns the handle of the new dimension.",
+  input: Schema.Struct({
+    start: Point,
+    end: Point,
+    linePosition: Point.annotations({
+      description:
+        "Point the dimension line passes through, controlling its offset from the measured segment",
+    }),
+    textOverride: Schema.optional(
+      Schema.NonEmptyString.annotations({
+        description: "Dimension text replacing the measured value",
+      }),
+    ),
     layer: OptionalLayer,
   }),
-  handler: ({ position, text, height, rotation, layer }) =>
-    madeEntity(layer, [
-      cons(0, `"TEXT"`),
-      ...layerGroups(layer),
-      cons(10, lispPoint(position)),
-      cons(40, lispReal(height)),
-      cons(1, lispString(text)),
-      cons(50, lispReal(rotation)),
-    ]),
+  handler: ({ start, end, linePosition, textOverride, layer }) =>
+    Effect.gen(function* () {
+      const bridge = yield* AutocadBridge;
+      const result = yield* bridge.evaluate(
+        `(mcp:dim-aligned ${lispPoint(start)} ${lispPoint(end)} ${lispPoint(linePosition)} ${lispNilable(textOverride, lispString)} ${lispNilable(layer, lispString)})`,
+      );
+      const handle = yield* decodeBridgeResult(Schema.String)(result);
+      return { handle };
+    }),
 });
 
 const ListEntitiesResult = Schema.Tuple(Schema.Number, LispList(EntitySummary));
@@ -350,6 +476,8 @@ export const entityTools: ReadonlyArray<Tool> = [
   createArc,
   createPolyline,
   createText,
+  createEntities,
+  createDimension,
   listEntities,
   getSelectedEntities,
   getBoundingBox,

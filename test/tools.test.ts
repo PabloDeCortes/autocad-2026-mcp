@@ -123,6 +123,94 @@ describe("create_polyline", () => {
   });
 });
 
+describe("create_polyline with width", () => {
+  test("emits the constant width group", async () => {
+    const { calls } = await runTool(
+      "create_polyline",
+      {
+        points: [
+          { x: 0, y: 0 },
+          { x: 5, y: 0 },
+        ],
+        width: 0.9,
+      },
+      () => "4D",
+    );
+    expect(calls[0]).toContain(`(cons 43 0.9)`);
+  });
+});
+
+describe("create_text justification", () => {
+  test("emits alignment groups for middle justification", async () => {
+    const { calls } = await runTool(
+      "create_text",
+      { position: { x: 1, y: 2 }, text: "Ось 6", height: 3, justification: "middle" },
+      () => "5E",
+    );
+    expect(calls[0]).toContain(`(cons 72 1)`);
+    expect(calls[0]).toContain(`(cons 73 2)`);
+    expect(calls[0]).toContain(`(cons 11 (list 1.0 2.0 0.0))`);
+  });
+
+  test("omits alignment groups for the default left justification", async () => {
+    const { calls } = await runTool(
+      "create_text",
+      { position: { x: 1, y: 2 }, text: "hi", height: 3 },
+      () => "5F",
+    );
+    expect(calls[0]).not.toContain(`(cons 72`);
+  });
+});
+
+describe("create_entities", () => {
+  test("batches several specs into one expression and decodes handles", async () => {
+    const { result, calls } = await runTool(
+      "create_entities",
+      {
+        entities: [
+          { type: "line", start: { x: 0, y: 0 }, end: { x: 1, y: 1 }, layer: "Труба" },
+          { type: "circle", center: { x: 2, y: 2 }, radius: 4 },
+        ],
+      },
+      () => ["1A", "1B"],
+    );
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toContain(`(mcp:require-layer "Труба")`);
+    expect(calls[0]).toContain(`(cons 0 "LINE")`);
+    expect(calls[0]).toContain(`(cons 0 "CIRCLE")`);
+    expect(result).toEqual({ created: 2, handles: ["1A", "1B"] });
+  });
+});
+
+describe("create_dimension", () => {
+  test("passes points, override text, and layer", async () => {
+    const { result, calls } = await runTool(
+      "create_dimension",
+      {
+        start: { x: 0, y: 0 },
+        end: { x: 0, y: 10 },
+        linePosition: { x: 5, y: 5 },
+        textOverride: "875",
+        layer: "Размеры",
+      },
+      () => "6A",
+    );
+    expect(calls).toEqual([
+      `(mcp:dim-aligned (list 0.0 0.0 0.0) (list 0.0 10.0 0.0) (list 5.0 5.0 0.0) "875" "Размеры")`,
+    ]);
+    expect(result).toEqual({ handle: "6A" });
+  });
+
+  test("passes nil when no override or layer is given", async () => {
+    const { calls } = await runTool(
+      "create_dimension",
+      { start: { x: 0, y: 0 }, end: { x: 3, y: 0 }, linePosition: { x: 1, y: 2 } },
+      () => "6B",
+    );
+    expect(calls[0]).toContain(`nil nil)`);
+  });
+});
+
 describe("list_entities", () => {
   test("decodes totals and rich summaries", async () => {
     const { result, calls } = await runTool(
@@ -340,22 +428,13 @@ describe("drawing_overview", () => {
     });
   });
 
-  test("decodes an empty drawing", async () => {
-    const { result } = await runTool("drawing_overview", {}, () => [
-      0,
-      null,
-      null,
-      [
-        [0, 0, 0],
-        [0, 0, 0],
-      ],
-      null,
-    ]);
+  test("decodes an empty drawing with null extents", async () => {
+    const { result } = await runTool("drawing_overview", {}, () => [0, null, null, null, null]);
     expect(result).toEqual({
       totalEntities: 0,
       entitiesByType: {},
       entitiesByLayer: {},
-      extents: { min: [0, 0, 0], max: [0, 0, 0] },
+      extents: null,
       blocks: [],
     });
   });

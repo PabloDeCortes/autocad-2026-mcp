@@ -41,7 +41,7 @@ const autocadStatus = makeTool({
 const evaluateLisp = makeTool({
   name: "evaluate_lisp",
   description:
-    'Evaluate raw AutoLISP code in the active drawing and return the value of the last expression as JSON. Multiple top-level expressions are allowed. Entity names are returned as handle strings; dotted pairs become two-element arrays. The code must never prompt for user input (no getpoint/getstring/getkword, no ssget without a mode like "_X", no dialogs) — a pending prompt stalls AutoCAD until the request times out.',
+    'Evaluate raw AutoLISP code in the active drawing and return the value of the last expression as JSON. Multiple top-level expressions are allowed. Entity names are returned as handle strings; dotted pairs become two-element arrays. Functions defined with defun persist for the AutoCAD session, so define drawing helpers once and reuse them in later calls; prefer batching many operations into one call over many small calls. The code must never prompt for user input (no getpoint/getstring/getkword, no ssget without a mode like "_X", no dialogs) — a pending prompt stalls AutoCAD until the request times out.',
   input: Schema.Struct({
     code: Schema.NonEmptyString.annotations({ description: "AutoLISP source code" }),
   }),
@@ -130,7 +130,7 @@ const OverviewResult = Schema.Tuple(
   Schema.Number,
   LispList(CountPair),
   LispList(CountPair),
-  Schema.Tuple(Coordinates, Coordinates),
+  Schema.NullOr(Schema.Tuple(Coordinates, Coordinates)),
   LispList(BlockUsage),
 );
 
@@ -149,7 +149,7 @@ const drawingOverview = makeTool({
         totalEntities: total,
         entitiesByType: Object.fromEntries(byType),
         entitiesByLayer: Object.fromEntries(byLayer),
-        extents: { min: extents[0], max: extents[1] },
+        extents: extents === null ? null : { min: extents[0], max: extents[1] },
         blocks: blocks.map(([name, entityCount, instanceCount]) => ({
           name,
           entityCount,

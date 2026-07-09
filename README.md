@@ -59,8 +59,10 @@ Start AutoCAD 2026, open a drawing, and call `autocad_status` to verify the conn
 | `create_line`           | Line between two points                                                                                                          |
 | `create_circle`         | Circle from center and radius                                                                                                    |
 | `create_arc`            | Arc from center, radius, start/end angles in degrees                                                                             |
-| `create_polyline`       | 2D lightweight polyline, optionally closed                                                                                       |
-| `create_text`           | Single-line text                                                                                                                 |
+| `create_polyline`       | 2D lightweight polyline, optionally closed and with a constant width                                                             |
+| `create_text`           | Single-line text with optional rotation and justification                                                                        |
+| `create_entities`       | Batch-create up to 500 lines/circles/arcs/polylines/texts in one round-trip                                                      |
+| `create_dimension`      | Aligned linear dimension with optional text override (for schematic, not-to-scale drawings)                                      |
 | `list_entities`         | List entities (handle, type, layer, color, bounding box, text content) with optional DXF type, layer, and spatial window filters |
 | `get_selected_entities` | Entities currently selected in the AutoCAD window (read without modifying the selection)                                         |
 | `get_bounding_box`      | World-coordinate bounding box per entity plus the combined box                                                                   |
@@ -82,6 +84,8 @@ Creation tools return the handle of the new entity; handles are the stable ids u
 `list_entities` window filters compare against entity bounding boxes in world coordinates: `crossing` selects entities whose box overlaps the window, `inside` requires the box to be fully contained, and `center` requires the box center to fall inside (useful for partitioning a drawing into sheet regions).
 
 `capture_view` screenshots the AutoCAD application window (restoring it first when minimized) and downscales to at most 1600px wide, returning an MCP image. The viewport must actually be showing the area of interest — pass `window` to zoom first.
+
+Creating large amounts of geometry: prefer `create_entities` (one round-trip for up to 500 entities). For anything beyond its five entity types, `evaluate_lisp` is the escape hatch — `defun`s persist for the AutoCAD session, so define parameterized drawing helpers once and call them from subsequent requests.
 
 ## Configuration
 
