@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   cons,
   lispInteger,
+  lispNilable,
   lispPoint,
   lispPoint2d,
   lispReal,
@@ -63,5 +64,11 @@ describe("expression builders", () => {
 
   test("cons and progn compose", () => {
     expect(progn(cons(0, `"LINE"`), "T")).toBe(`(progn (cons 0 "LINE") T)`);
+  });
+
+  test("lispNilable renders undefined as nil and values with the renderer", () => {
+    expect(lispNilable(undefined, lispString)).toBe("nil");
+    expect(lispNilable("Walls", lispString)).toBe(`"Walls"`);
+    expect(lispNilable(3, lispInteger)).toBe("3");
   });
 });

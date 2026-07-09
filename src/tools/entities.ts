@@ -3,6 +3,7 @@ import { AutocadBridge } from "../bridge";
 import {
   cons,
   lispInteger,
+  lispNilable,
   lispPoint,
   lispPoint2d,
   lispReal,
@@ -10,7 +11,14 @@ import {
   lispStringList,
   progn,
 } from "../lisp";
-import { AngleDegrees, EntityHandle, EntitySummary, Point, decodeBridgeResult } from "../schemas";
+import {
+  AngleDegrees,
+  EntityHandle,
+  EntitySummary,
+  LispList,
+  Point,
+  decodeBridgeResult,
+} from "../schemas";
 import { makeTool } from "./definition";
 import type { Tool } from "./definition";
 
@@ -135,28 +143,88 @@ const createText = makeTool({
     ]),
 });
 
-const ListEntitiesResult = Schema.Tuple(Schema.Number, Schema.Array(EntitySummary));
+const ListEntitiesResult = Schema.Tuple(Schema.Number, LispList(EntitySummary));
+
+const Limit = Schema.optionalWith(Schema.Int.pipe(Schema.positive()), { default: () => 100 });
+
+const Handles = Schema.NonEmptyArray(EntityHandle);
+
+const summarizedEntities = (call: string) =>
+  Effect.gen(function* () {
+    const bridge = yield* AutocadBridge;
+    const result = yield* bridge.evaluate(call);
+    const [total, entities] = yield* decodeBridgeResult(ListEntitiesResult)(result);
+    return { total, returned: entities.length, entities };
+  });
 
 const listEntities = makeTool({
   name: "list_entities",
   description:
-    "List entities in the drawing with handle, DXF type, and layer. Optionally filter by DXF type names (comma separated, wildcards allowed, e.g. LINE,CIRCLE or *TEXT).",
+    "List entities in the drawing with handle, DXF type, and layer. Optionally filter by DXF type names (comma separated, wildcards allowed, e.g. LINE,CIRCLE or *TEXT) and by layer name.",
   input: Schema.Struct({
     typeFilter: Schema.optional(
       Schema.NonEmptyString.annotations({
         description: "DXF type filter such as LINE, CIRCLE,ARC, or *POLYLINE",
       }),
     ),
-    limit: Schema.optionalWith(Schema.Int.pipe(Schema.positive()), { default: () => 100 }),
+    layerFilter: Schema.optional(
+      Schema.NonEmptyString.annotations({
+        description: "Layer name filter, wildcards allowed, e.g. Walls or Floor*",
+      }),
+    ),
+    limit: Limit,
   }),
-  handler: ({ typeFilter, limit }) =>
+  handler: ({ typeFilter, layerFilter, limit }) =>
+    summarizedEntities(
+      `(mcp:list-entities ${lispNilable(typeFilter, lispString)} ${lispNilable(layerFilter, lispString)} ${lispInteger(limit)})`,
+    ),
+});
+
+const getSelectedEntities = makeTool({
+  name: "get_selected_entities",
+  description:
+    "List the entities currently selected (highlighted) in the AutoCAD window, with handle, DXF type, and layer. Reads the selection without modifying it.",
+  input: Schema.Struct({ limit: Limit }),
+  handler: ({ limit }) => summarizedEntities(`(mcp:selected-entities ${lispInteger(limit)})`),
+});
+
+const Coordinates = Schema.Tuple(Schema.Number, Schema.Number, Schema.Number);
+
+const BoundingBoxRecord = Schema.Tuple(Schema.String, Coordinates, Coordinates);
+
+const axisExtremes = (
+  corners: ReadonlyArray<readonly [number, number, number]>,
+  pick: (...values: Array<number>) => number,
+): ReadonlyArray<number> => [
+  pick(...corners.map((corner) => corner[0])),
+  pick(...corners.map((corner) => corner[1])),
+  pick(...corners.map((corner) => corner[2])),
+];
+
+const getBoundingBox = makeTool({
+  name: "get_bounding_box",
+  description:
+    "Return the world-coordinate bounding box (min and max corner as [x, y, z]) of each entity, plus the combined box enclosing all of them.",
+  input: Schema.Struct({ handles: Handles }),
+  handler: ({ handles }) =>
     Effect.gen(function* () {
       const bridge = yield* AutocadBridge;
-      const result = yield* bridge.evaluate(
-        `(mcp:list-entities ${typeFilter === undefined ? "nil" : lispString(typeFilter)} ${lispInteger(limit)})`,
-      );
-      const [total, entities] = yield* decodeBridgeResult(ListEntitiesResult)(result);
-      return { total, returned: entities.length, entities };
+      const result = yield* bridge.evaluate(`(mcp:bounding-boxes ${lispStringList(handles)})`);
+      const records = yield* decodeBridgeResult(Schema.Array(BoundingBoxRecord))(result);
+      const boxes = records.map(([handle, min, max]) => ({ handle, min, max }));
+      return {
+        boxes,
+        combined: {
+          min: axisExtremes(
+            boxes.map((box) => box.min),
+            Math.min,
+          ),
+          max: axisExtremes(
+            boxes.map((box) => box.max),
+            Math.max,
+          ),
+        },
+      };
     }),
 });
 
@@ -181,8 +249,6 @@ const getEntity = makeTool({
       };
     }),
 });
-
-const Handles = Schema.NonEmptyArray(EntityHandle);
 
 const countedCall = (key: string, call: string) =>
   Effect.gen(function* () {
@@ -245,6 +311,8 @@ export const entityTools: ReadonlyArray<Tool> = [
   createPolyline,
   createText,
   listEntities,
+  getSelectedEntities,
+  getBoundingBox,
   getEntity,
   eraseEntities,
   moveEntities,

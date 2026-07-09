@@ -1,6 +1,6 @@
 import { Effect, Schema } from "effect";
 import { AutocadBridge } from "../bridge";
-import { lispInteger, lispString, progn } from "../lisp";
+import { lispInteger, lispNilable, lispString, progn } from "../lisp";
 import { LayerRecord, decodeBridgeResult } from "../schemas";
 import { makeTool } from "./definition";
 import type { Tool } from "./definition";
@@ -36,7 +36,7 @@ const createLayer = makeTool({
     Effect.gen(function* () {
       const bridge = yield* AutocadBridge;
       const result = yield* bridge.evaluate(
-        `(mcp:create-layer ${lispString(name)} ${colorIndex === undefined ? "nil" : lispInteger(colorIndex)})`,
+        `(mcp:create-layer ${lispString(name)} ${lispNilable(colorIndex, lispInteger)})`,
       );
       const created = yield* decodeBridgeResult(Schema.String)(result);
       return { name: created };

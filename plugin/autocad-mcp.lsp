@@ -132,14 +132,32 @@
   (setq d (entget e))
   (list (cdr (assoc 5 d)) (cdr (assoc 0 d)) (cdr (assoc 8 d))))
 
-(defun mcp:list-entities (filter limit / ss total i out)
-  (setq ss (if filter (ssget "_X" (list (cons 0 filter))) (ssget "_X")))
+(defun mcp:summarize-set (ss limit / total i out)
   (setq total (if ss (sslength ss) 0))
   (setq i 0 out nil)
   (while (and (< i total) (< i limit))
     (setq out (cons (mcp:entity-summary (ssname ss i)) out))
     (setq i (1+ i)))
   (list total (reverse out)))
+
+(defun mcp:list-entities (filter layer limit / conditions)
+  (setq conditions nil)
+  (if layer (setq conditions (cons (cons 8 layer) conditions)))
+  (if filter (setq conditions (cons (cons 0 filter) conditions)))
+  (mcp:summarize-set (if conditions (ssget "_X" conditions) (ssget "_X")) limit))
+
+(defun mcp:selected-entities (limit)
+  (mcp:summarize-set (cadr (ssgetfirst)) limit))
+
+(defun mcp:entity-box (h / outcome minpt maxpt)
+  (setq outcome
+    (vl-catch-all-apply 'vla-GetBoundingBox (list (mcp:vla-of h) 'minpt 'maxpt)))
+  (if (vl-catch-all-error-p outcome)
+      (mcp:throw (strcat "no bounding box for entity " h)))
+  (list h (vlax-safearray->list minpt) (vlax-safearray->list maxpt)))
+
+(defun mcp:bounding-boxes (handles)
+  (mapcar 'mcp:entity-box handles))
 
 (defun mcp:vla-of (h)
   (vlax-ename->vla-object (mcp:require-entity h)))
@@ -197,5 +215,7 @@
     (vla-InsertBlock (vla-get-ModelSpace (mcp:active-document))
                      (mcp:point3d pt) name scale scale scale rot))
   (mcp:handle-of (vlax-vla-object->ename obj)))
+
+(setq mcp:api 2)
 
 (princ)

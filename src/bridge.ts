@@ -18,7 +18,11 @@ import { BridgeResponse } from "./schemas";
 
 class ResponseNotReady extends Data.TaggedError("ResponseNotReady") {}
 
-const TriggerOutcome = Schema.Literal("OK", "NO_AUTOCAD", "NO_DOCUMENT", "SEND_FAILED");
+class AutocadBusy extends Data.TaggedError("AutocadBusy") {}
+
+const pluginApi = 2;
+
+const TriggerOutcome = Schema.Literal("OK", "BUSY", "NO_AUTOCAD", "NO_DOCUMENT", "SEND_FAILED");
 
 const decodeTriggerOutcome = Schema.decodeUnknownOption(TriggerOutcome);
 
@@ -30,11 +34,12 @@ const triggerScript = (lispCall: string): string => {
   const escaped = lispCall.replaceAll("'", "''");
   return [
     "$ErrorActionPreference = 'Stop'",
+    "function Test-ComBusy($exception) { $exception.HResult -in -2147418111, -2147417846 }",
     "try { $acad = [System.Runtime.InteropServices.Marshal]::GetActiveObject('AutoCAD.Application') } catch { Write-Output 'NO_AUTOCAD'; exit 0 }",
     "$doc = $null",
-    "try { $doc = $acad.ActiveDocument } catch {}",
+    "try { $doc = $acad.ActiveDocument } catch { if (Test-ComBusy $_.Exception) { Write-Output 'BUSY'; exit 0 } }",
     "if ($null -eq $doc) { Write-Output 'NO_DOCUMENT'; exit 0 }",
-    `try { $doc.SendCommand('${escaped}' + "\`n"); Write-Output 'OK' } catch { Write-Output ('SEND_FAILED ' + $_.Exception.Message) }`,
+    `try { $doc.SendCommand('${escaped}' + "\`n"); Write-Output 'OK' } catch { if (Test-ComBusy $_.Exception) { Write-Output 'BUSY' } else { Write-Output ('SEND_FAILED ' + $_.Exception.Message) } }`,
   ].join("\n");
 };
 
@@ -51,7 +56,7 @@ export class AutocadBridge extends Effect.Service<AutocadBridge>()("AutocadBridg
 
     yield* io(fs.makeDirectory(config.exchangeDirectory, { recursive: true }));
 
-    const trigger = (lispCall: string) =>
+    const attemptTrigger = (lispCall: string) =>
       Effect.gen(function* () {
         const encoded = Buffer.from(triggerScript(lispCall), "utf16le").toString("base64");
         const command = Command.make(
@@ -77,6 +82,9 @@ export class AutocadBridge extends Effect.Service<AutocadBridge>()("AutocadBridg
         switch (outcome.value) {
           case "OK":
             return;
+          case "BUSY":
+            yield* new AutocadBusy();
+            return;
           case "NO_AUTOCAD":
             yield* new AutocadNotRunningError();
             return;
@@ -90,6 +98,23 @@ export class AutocadBridge extends Effect.Service<AutocadBridge>()("AutocadBridg
             return;
         }
       });
+
+    const trigger = (lispCall: string) =>
+      attemptTrigger(lispCall).pipe(
+        Effect.retry({
+          schedule: Schedule.spaced(config.busyRetryInterval).pipe(
+            Schedule.upTo(config.busyRetryTimeout),
+          ),
+          while: (error) => error._tag === "AutocadBusy",
+        }),
+        Effect.catchTag(
+          "AutocadBusy",
+          () =>
+            new SendCommandError({
+              message: `AutoCAD stayed busy for ${Duration.format(config.busyRetryTimeout)} (a command, script, or modal dialog is in progress). Finish or cancel it in AutoCAD (press ESC) and try again.`,
+            }),
+        ),
+      );
 
     const awaitResponse = (responsePath: string) =>
       io(fs.exists(responsePath)).pipe(
@@ -106,7 +131,7 @@ export class AutocadBridge extends Effect.Service<AutocadBridge>()("AutocadBridg
           duration: config.responseTimeout,
           onTimeout: () =>
             new BridgeTimeoutError({
-              message: `No response from AutoCAD within ${Duration.format(config.responseTimeout)}. Verify AutoCAD is idle (no command or dialog in progress) and that the plugin at ${pluginPath} is loadable.`,
+              message: `No response from AutoCAD within ${Duration.format(config.responseTimeout)}. AutoCAD may be waiting at a prompt or dialog (press ESC in AutoCAD to clear it); also verify the plugin at ${pluginPath} is loadable.`,
             }),
         }),
         Effect.catchTag("ResponseNotReady", (error) => Effect.die(error)),
@@ -119,10 +144,12 @@ export class AutocadBridge extends Effect.Service<AutocadBridge>()("AutocadBridg
     ): Effect.Effect<unknown, BridgeError> =>
       Effect.gen(function* () {
         yield* io(fs.writeFileString(requestPath, expression));
-        yield* trigger(
-          `(if (null mcp:execute) (load ${lispString(pluginPath)} nil)) (mcp:execute ${lispString(requestPath)} ${lispString(responsePath)})`,
+        const raw = yield* Effect.raceFirst(
+          awaitResponse(responsePath),
+          trigger(
+            `(if (or (null mcp:api) (/= mcp:api ${pluginApi})) (load ${lispString(pluginPath)} nil)) (mcp:execute ${lispString(requestPath)} ${lispString(responsePath)})`,
+          ).pipe(Effect.zipRight(Effect.never)),
         );
-        const raw = yield* awaitResponse(responsePath);
         const response = yield* decodeBridgeResponse(raw).pipe(
           Effect.mapError((error) => new BridgeResponseError({ message: error.message })),
         );

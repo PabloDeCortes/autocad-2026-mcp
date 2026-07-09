@@ -19,12 +19,20 @@ export class BridgeConfig extends Effect.Service<BridgeConfig>()("BridgeConfig",
     const pollInterval = yield* Config.duration("AUTOCAD_MCP_POLL_INTERVAL").pipe(
       Config.withDefault(Duration.millis(100)),
     );
+    const busyRetryInterval = yield* Config.duration("AUTOCAD_MCP_BUSY_RETRY_INTERVAL").pipe(
+      Config.withDefault(Duration.millis(250)),
+    );
+    const busyRetryTimeout = yield* Config.duration("AUTOCAD_MCP_BUSY_RETRY_TIMEOUT").pipe(
+      Config.withDefault(Duration.seconds(15)),
+    );
     return {
       exchangeDirectory,
       pluginPath,
       powershellPath,
       responseTimeout,
       pollInterval,
+      busyRetryInterval,
+      busyRetryTimeout,
     } as const;
   }),
 }) {}

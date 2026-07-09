@@ -1,7 +1,7 @@
 import { Effect, Schema } from "effect";
 import { AutocadBridge } from "../bridge";
 import { lispPoint, lispReal, lispString } from "../lisp";
-import { AngleDegrees, Point, decodeBridgeResult } from "../schemas";
+import { AngleDegrees, LispList, Point, decodeBridgeResult } from "../schemas";
 import { makeTool } from "./definition";
 import type { Tool } from "./definition";
 
@@ -13,7 +13,7 @@ const listBlocks = makeTool({
     Effect.gen(function* () {
       const bridge = yield* AutocadBridge;
       const result = yield* bridge.evaluate(`(mcp:list-blocks)`);
-      const blocks = yield* decodeBridgeResult(Schema.Array(Schema.String))(result);
+      const blocks = yield* decodeBridgeResult(LispList(Schema.String))(result);
       return { blocks };
     }),
 });

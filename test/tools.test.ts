@@ -129,7 +129,7 @@ describe("list_entities", () => {
         ],
       ],
     );
-    expect(calls).toEqual([`(mcp:list-entities "LINE" 2)`]);
+    expect(calls).toEqual([`(mcp:list-entities "LINE" nil 2)`]);
     expect(result).toEqual({
       total: 5,
       returned: 2,
@@ -142,7 +142,51 @@ describe("list_entities", () => {
 
   test("passes nil when no filter is given", async () => {
     const { calls } = await runTool("list_entities", {}, () => [0, []]);
-    expect(calls).toEqual([`(mcp:list-entities nil 100)`]);
+    expect(calls).toEqual([`(mcp:list-entities nil nil 100)`]);
+  });
+
+  test("filters by layer", async () => {
+    const { calls } = await runTool("list_entities", { layerFilter: "Walls" }, () => [0, []]);
+    expect(calls).toEqual([`(mcp:list-entities nil "Walls" 100)`]);
+  });
+});
+
+describe("get_selected_entities", () => {
+  test("reads the current selection", async () => {
+    const { result, calls } = await runTool("get_selected_entities", {}, () => [
+      1,
+      [["1F", "LWPOLYLINE", "Frames"]],
+    ]);
+    expect(calls).toEqual([`(mcp:selected-entities 100)`]);
+    expect(result).toEqual({
+      total: 1,
+      returned: 1,
+      entities: [{ handle: "1F", type: "LWPOLYLINE", layer: "Frames" }],
+    });
+  });
+});
+
+describe("get_selected_entities with empty selection", () => {
+  test("decodes the nil list AutoLISP produces for an empty selection", async () => {
+    const { result } = await runTool("get_selected_entities", {}, () => [0, null]);
+    expect(result).toEqual({ total: 0, returned: 0, entities: [] });
+  });
+});
+
+describe("get_bounding_box", () => {
+  test("returns per-entity boxes and the combined box", async () => {
+    const { result, calls } = await runTool("get_bounding_box", { handles: ["1F", "20"] }, () => [
+      ["1F", [0, 0, 0], [10, 5, 0]],
+      ["20", [-2, 3, 0], [4, 20, 1]],
+    ]);
+    expect(calls).toEqual([`(mcp:bounding-boxes (list "1F" "20"))`]);
+    expect(result).toEqual({
+      boxes: [
+        { handle: "1F", min: [0, 0, 0], max: [10, 5, 0] },
+        { handle: "20", min: [-2, 3, 0], max: [4, 20, 1] },
+      ],
+      combined: { min: [-2, 0, 0], max: [10, 20, 1] },
+    });
   });
 });
 

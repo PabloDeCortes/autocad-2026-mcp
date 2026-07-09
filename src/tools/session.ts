@@ -40,7 +40,7 @@ const autocadStatus = makeTool({
 const evaluateLisp = makeTool({
   name: "evaluate_lisp",
   description:
-    "Evaluate raw AutoLISP code in the active drawing and return the value of the last expression as JSON. Multiple top-level expressions are allowed. Entity names are returned as handle strings; dotted pairs become two-element arrays.",
+    'Evaluate raw AutoLISP code in the active drawing and return the value of the last expression as JSON. Multiple top-level expressions are allowed. Entity names are returned as handle strings; dotted pairs become two-element arrays. The code must never prompt for user input (no getpoint/getstring/getkword, no ssget without a mode like "_X", no dialogs) — a pending prompt stalls AutoCAD until the request times out.',
   input: Schema.Struct({
     code: Schema.NonEmptyString.annotations({ description: "AutoLISP source code" }),
   }),

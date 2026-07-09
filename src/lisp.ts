@@ -40,6 +40,9 @@ export const lispPoint2d = (point: Point): string =>
 export const lispStringList = (values: ReadonlyArray<string>): string =>
   `(list ${values.map(lispString).join(" ")})`;
 
+export const lispNilable = <A>(value: A | undefined, render: (value: A) => string): string =>
+  value === undefined ? "nil" : render(value);
+
 export const cons = (code: number, value: string): string => `(cons ${code} ${value})`;
 
 export const progn = (...expressions: ReadonlyArray<string>): string =>

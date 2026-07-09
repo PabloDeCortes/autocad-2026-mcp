@@ -30,6 +30,13 @@ export const BridgeResponse = Schema.Union(
 
 export type BridgeResponse = typeof BridgeResponse.Type;
 
+export const LispList = <A, I>(item: Schema.Schema<A, I>) =>
+  Schema.transform(Schema.NullOr(Schema.Array(item)), Schema.Array(Schema.typeSchema(item)), {
+    strict: true,
+    decode: (value) => value ?? [],
+    encode: (value) => value,
+  });
+
 export const EntitySummary = Schema.transform(
   Schema.Tuple(Schema.String, Schema.String, Schema.String),
   Schema.Struct({ handle: Schema.String, type: Schema.String, layer: Schema.String }),
