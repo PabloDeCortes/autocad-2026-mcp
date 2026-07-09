@@ -3,3 +3,4 @@ dist/
 .repos/effect
 *.log
 .DS_Store
+scripts/mcp-call-image-*.png
