@@ -1,5 +1,6 @@
-import { Effect, JSONSchema, Schema } from "effect";
+import { Data, Effect, JSONSchema, Schema } from "effect";
 import type { AutocadBridge } from "../bridge";
+import type { ViewCapture } from "../capture";
 import { ToolInputError } from "../errors";
 import type { BridgeError } from "../errors";
 
@@ -9,13 +10,20 @@ export interface ToolInputJsonSchema {
   readonly required?: ReadonlyArray<string> | undefined;
 }
 
+export class ImageResult extends Data.TaggedClass("ImageResult")<{
+  readonly data: Uint8Array;
+  readonly mimeType: string;
+}> {}
+
+export type ToolServices = AutocadBridge | ViewCapture;
+
 export interface Tool {
   readonly name: string;
   readonly description: string;
   readonly inputSchema: ToolInputJsonSchema;
   readonly run: (
     args: unknown,
-  ) => Effect.Effect<unknown, ToolInputError | BridgeError, AutocadBridge>;
+  ) => Effect.Effect<unknown, ToolInputError | BridgeError, ToolServices>;
 }
 
 const toInputJsonSchema = <A, I>(schema: Schema.Schema<A, I>): ToolInputJsonSchema => {
@@ -29,7 +37,7 @@ export const makeTool = <A, I>(options: {
   readonly name: string;
   readonly description: string;
   readonly input: Schema.Schema<A, I>;
-  readonly handler: (input: A) => Effect.Effect<unknown, BridgeError, AutocadBridge>;
+  readonly handler: (input: A) => Effect.Effect<unknown, BridgeError, ToolServices>;
 }): Tool => ({
   name: options.name,
   description: options.description,

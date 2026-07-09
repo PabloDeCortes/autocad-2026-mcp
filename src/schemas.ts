@@ -23,6 +23,19 @@ export const EntityHandle = Schema.NonEmptyString.annotations({
   description: "AutoCAD entity handle",
 });
 
+export const Limit = Schema.optionalWith(Schema.Int.pipe(Schema.positive()), {
+  default: () => 100,
+});
+
+export const Coordinates = Schema.Tuple(Schema.Number, Schema.Number, Schema.Number);
+
+export type Coordinates = typeof Coordinates.Type;
+
+export const BoundingBox = Schema.Struct({
+  min: Schema.typeSchema(Coordinates),
+  max: Schema.typeSchema(Coordinates),
+});
+
 export const BridgeResponse = Schema.Union(
   Schema.Struct({ ok: Schema.Literal(true), result: Schema.optional(Schema.Unknown) }),
   Schema.Struct({ ok: Schema.Literal(false), error: Schema.String }),
@@ -38,12 +51,42 @@ export const LispList = <A, I>(item: Schema.Schema<A, I>) =>
   });
 
 export const EntitySummary = Schema.transform(
-  Schema.Tuple(Schema.String, Schema.String, Schema.String),
-  Schema.Struct({ handle: Schema.String, type: Schema.String, layer: Schema.String }),
+  Schema.Tuple(
+    Schema.String,
+    Schema.String,
+    Schema.String,
+    Schema.NullOr(Schema.Int),
+    Schema.NullOr(Schema.Tuple(Coordinates, Coordinates)),
+    Schema.NullOr(Schema.String),
+  ),
+  Schema.Struct({
+    handle: Schema.String,
+    type: Schema.String,
+    layer: Schema.String,
+    colorIndex: Schema.optional(Schema.Int),
+    boundingBox: Schema.optional(BoundingBox),
+    text: Schema.optional(Schema.String),
+  }),
   {
-    strict: true,
-    decode: ([handle, type, layer]) => ({ handle, type, layer }),
-    encode: ({ handle, type, layer }) => [handle, type, layer] as const,
+    strict: false,
+    decode: ([handle, type, layer, colorIndex, box, text]) => ({
+      handle,
+      type,
+      layer,
+      ...(colorIndex === null ? {} : { colorIndex }),
+      ...(box === null ? {} : { boundingBox: { min: box[0], max: box[1] } }),
+      ...(text === null ? {} : { text }),
+    }),
+    encode: (summary) => [
+      summary.handle,
+      summary.type,
+      summary.layer,
+      summary.colorIndex ?? null,
+      summary.boundingBox === undefined
+        ? null
+        : ([summary.boundingBox.min, summary.boundingBox.max] as const),
+      summary.text ?? null,
+    ],
   },
 );
 

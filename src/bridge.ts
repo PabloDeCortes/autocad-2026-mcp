@@ -20,7 +20,7 @@ class ResponseNotReady extends Data.TaggedError("ResponseNotReady") {}
 
 class AutocadBusy extends Data.TaggedError("AutocadBusy") {}
 
-const pluginApi = 2;
+const pluginApi = 4;
 
 const TriggerOutcome = Schema.Literal("OK", "BUSY", "NO_AUTOCAD", "NO_DOCUMENT", "SEND_FAILED");
 

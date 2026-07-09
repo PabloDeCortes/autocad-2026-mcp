@@ -101,9 +101,14 @@
       (mcp:throw (strcat "unreadable request: " (vl-catch-all-error-message expr))))
   (eval expr))
 
-(defun mcp:execute (req res / outcome)
+(defun mcp:execute (req res / outcome doc marked)
   (setq *mcp-thrown* nil)
+  (setq doc (vl-catch-all-apply 'mcp:active-document nil))
+  (setq marked
+    (and (not (vl-catch-all-error-p doc))
+         (not (vl-catch-all-error-p (vl-catch-all-apply 'vla-StartUndoMark (list doc))))))
   (setq outcome (vl-catch-all-apply 'mcp:eval-request (list req)))
+  (if marked (vl-catch-all-apply 'vla-EndUndoMark (list doc)))
   (if (vl-catch-all-error-p outcome)
       (mcp:respond res
         (mcp:failure-json
@@ -128,23 +133,105 @@
       (mcp:throw (strcat "no layer named " name)))
   name)
 
-(defun mcp:entity-summary (e / d)
+(defun mcp:box-or-nil (e / outcome minpt maxpt)
+  (setq outcome
+    (vl-catch-all-apply 'vla-GetBoundingBox (list (vlax-ename->vla-object e) 'minpt 'maxpt)))
+  (if (vl-catch-all-error-p outcome)
+      nil
+      (list (vlax-safearray->list minpt) (vlax-safearray->list maxpt))))
+
+(defun mcp:entity-text (d / parts)
+  (if (member (cdr (assoc 0 d)) '("TEXT" "MTEXT" "DIMENSION" "ATTDEF" "ATTRIB"))
+      (progn
+        (setq parts nil)
+        (foreach g d (if (= (car g) 3) (setq parts (cons (cdr g) parts))))
+        (apply 'strcat
+               (append (reverse parts)
+                       (list (cond ((cdr (assoc 1 d))) (""))))))
+      nil))
+
+(defun mcp:entity-row (e / d)
   (setq d (entget e))
-  (list (cdr (assoc 5 d)) (cdr (assoc 0 d)) (cdr (assoc 8 d))))
+  (list (cdr (assoc 5 d)) (cdr (assoc 0 d)) (cdr (assoc 8 d))
+        (cdr (assoc 62 d)) (mcp:box-or-nil e) (mcp:entity-text d)))
 
 (defun mcp:summarize-set (ss limit / total i out)
   (setq total (if ss (sslength ss) 0))
   (setq i 0 out nil)
   (while (and (< i total) (< i limit))
-    (setq out (cons (mcp:entity-summary (ssname ss i)) out))
+    (setq out (cons (mcp:entity-row (ssname ss i)) out))
     (setq i (1+ i)))
   (list total (reverse out)))
 
-(defun mcp:list-entities (filter layer limit / conditions)
+(defun mcp:window-match (box w / mn mx x0 y0 x1 y1 mode cx cy)
+  (if (null box)
+      nil
+      (progn
+        (setq mn (car box) mx (cadr box)
+              x0 (car w) y0 (cadr w) x1 (caddr w) y1 (cadddr w) mode (nth 4 w))
+        (cond
+          ((= mode "inside")
+           (and (>= (car mn) x0) (>= (cadr mn) y0) (<= (car mx) x1) (<= (cadr mx) y1)))
+          ((= mode "center")
+           (setq cx (/ (+ (car mn) (car mx)) 2.0) cy (/ (+ (cadr mn) (cadr mx)) 2.0))
+           (and (>= cx x0) (<= cx x1) (>= cy y0) (<= cy y1)))
+          (T (and (<= (car mn) x1) (>= (car mx) x0) (<= (cadr mn) y1) (>= (cadr mx) y0)))))))
+
+(defun mcp:list-entities (filter layer limit window / conditions ss i total out row)
   (setq conditions nil)
   (if layer (setq conditions (cons (cons 8 layer) conditions)))
   (if filter (setq conditions (cons (cons 0 filter) conditions)))
-  (mcp:summarize-set (if conditions (ssget "_X" conditions) (ssget "_X")) limit))
+  (setq ss (if conditions (ssget "_X" conditions) (ssget "_X")))
+  (if (null window)
+      (mcp:summarize-set ss limit)
+      (progn
+        (setq i 0 total 0 out nil)
+        (while (and ss (< i (sslength ss)))
+          (setq row (mcp:entity-row (ssname ss i)))
+          (if (mcp:window-match (nth 4 row) window)
+              (progn
+                (setq total (1+ total))
+                (if (<= total limit) (setq out (cons row out)))))
+          (setq i (1+ i)))
+        (list total (reverse out)))))
+
+(defun mcp:count-into (alist key / pair)
+  (setq pair (assoc key alist))
+  (if pair
+      (subst (cons key (1+ (cdr pair))) pair alist)
+      (cons (cons key 1) alist)))
+
+(defun mcp:drawing-overview (/ ss total i d tp byType byLayer byBlock blocks bd name ent bcount)
+  (setq ss (ssget "_X") total (if ss (sslength ss) 0))
+  (setq i 0 byType nil byLayer nil byBlock nil)
+  (while (< i total)
+    (setq d (entget (ssname ss i)) tp (cdr (assoc 0 d)))
+    (setq byType (mcp:count-into byType tp))
+    (setq byLayer (mcp:count-into byLayer (cdr (assoc 8 d))))
+    (if (= tp "INSERT") (setq byBlock (mcp:count-into byBlock (cdr (assoc 2 d)))))
+    (setq i (1+ i)))
+  (setq blocks nil bd (tblnext "BLOCK" T))
+  (while bd
+    (setq name (cdr (assoc 2 bd)) ent (cdr (assoc -2 bd)) bcount 0)
+    (if (or (not (wcmatch name "`**")) (assoc name byBlock))
+        (progn
+          (while ent (setq bcount (1+ bcount) ent (entnext ent)))
+          (setq blocks (cons (list name bcount (cond ((cdr (assoc name byBlock))) (0))) blocks))))
+    (setq bd (tblnext "BLOCK")))
+  (list total (reverse byType) (reverse byLayer)
+        (list (getvar "EXTMIN") (getvar "EXTMAX"))
+        (reverse blocks)))
+
+(defun mcp:block-definition (name limit / d base ent total out)
+  (setq d (tblsearch "BLOCK" name))
+  (if (null d) (mcp:throw (strcat "no block named " name)))
+  (setq base (cdr (assoc 10 d)) ent (cdr (assoc -2 d)))
+  (setq total 0 out nil)
+  (while ent
+    (setq total (1+ total))
+    (if (<= total limit) (setq out (cons (mcp:entity-row ent) out)))
+    (setq ent (entnext ent)))
+  (list base total (reverse out)))
 
 (defun mcp:selected-entities (limit)
   (mcp:summarize-set (cadr (ssgetfirst)) limit))
@@ -177,6 +264,18 @@
   (foreach h handles
     (vla-Move (mcp:vla-of h) origin (mcp:point3d delta)))
   (length handles))
+
+(defun mcp:copy (handles delta / origin out new)
+  (setq origin (vlax-3d-point 0 0 0) out nil)
+  (foreach h handles
+    (setq new (vla-Copy (mcp:vla-of h)))
+    (vla-Move new origin (mcp:point3d delta))
+    (setq out (cons (vla-get-Handle new) out)))
+  (reverse out))
+
+(defun mcp:zoom-window (p1 p2)
+  (vla-ZoomWindow (vlax-get-acad-object) (mcp:point3d p1) (mcp:point3d p2))
+  T)
 
 (defun mcp:rotate (handles base angle)
   (foreach h handles
@@ -216,6 +315,6 @@
                      (mcp:point3d pt) name scale scale scale rot))
   (mcp:handle-of (vlax-vla-object->ename obj)))
 
-(setq mcp:api 2)
+(setq mcp:api 4)
 
 (princ)

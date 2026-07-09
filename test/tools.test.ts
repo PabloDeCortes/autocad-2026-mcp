@@ -1,8 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import { Effect, Exit, Layer } from "effect";
 import { AutocadBridge } from "../src/bridge";
+import { ViewCapture } from "../src/capture";
 import { LispEvaluationError } from "../src/errors";
 import { tools } from "../src/tools";
+import { ImageResult } from "../src/tools/definition";
 
 const findTool = (name: string) => {
   const tool = tools.find((candidate) => candidate.name === name);
@@ -12,17 +14,22 @@ const findTool = (name: string) => {
   return tool;
 };
 
+const capturedBytes = new Uint8Array([137, 80, 78, 71]);
+
 const stubBridge = (respond: (expression: string) => unknown) => {
   const calls: Array<string> = [];
-  const layer = Layer.succeed(
-    AutocadBridge,
-    AutocadBridge.make({
-      evaluate: (expression) =>
-        Effect.sync(() => {
-          calls.push(expression);
-          return respond(expression);
-        }),
-    }),
+  const layer = Layer.merge(
+    Layer.succeed(
+      AutocadBridge,
+      AutocadBridge.make({
+        evaluate: (expression) =>
+          Effect.sync(() => {
+            calls.push(expression);
+            return respond(expression);
+          }),
+      }),
+    ),
+    Layer.succeed(ViewCapture, ViewCapture.make({ capture: () => Effect.succeed(capturedBytes) })),
   );
   return { calls, layer };
 };
@@ -117,37 +124,70 @@ describe("create_polyline", () => {
 });
 
 describe("list_entities", () => {
-  test("decodes totals and summaries", async () => {
+  test("decodes totals and rich summaries", async () => {
     const { result, calls } = await runTool(
       "list_entities",
       { typeFilter: "LINE", limit: 2 },
       () => [
         5,
         [
-          ["1F", "LINE", "0"],
-          ["20", "LINE", "Walls"],
+          [
+            "1F",
+            "LINE",
+            "0",
+            null,
+            [
+              [0, 0, 0],
+              [10, 5, 0],
+            ],
+            null,
+          ],
+          ["20", "MTEXT", "Walls", 3, null, "Стояк В1"],
         ],
       ],
     );
-    expect(calls).toEqual([`(mcp:list-entities "LINE" nil 2)`]);
+    expect(calls).toEqual([`(mcp:list-entities "LINE" nil 2 nil)`]);
     expect(result).toEqual({
       total: 5,
       returned: 2,
       entities: [
-        { handle: "1F", type: "LINE", layer: "0" },
-        { handle: "20", type: "LINE", layer: "Walls" },
+        {
+          handle: "1F",
+          type: "LINE",
+          layer: "0",
+          boundingBox: { min: [0, 0, 0], max: [10, 5, 0] },
+        },
+        { handle: "20", type: "MTEXT", layer: "Walls", colorIndex: 3, text: "Стояк В1" },
       ],
     });
   });
 
   test("passes nil when no filter is given", async () => {
     const { calls } = await runTool("list_entities", {}, () => [0, []]);
-    expect(calls).toEqual([`(mcp:list-entities nil nil 100)`]);
+    expect(calls).toEqual([`(mcp:list-entities nil nil 100 nil)`]);
   });
 
   test("filters by layer", async () => {
     const { calls } = await runTool("list_entities", { layerFilter: "Walls" }, () => [0, []]);
-    expect(calls).toEqual([`(mcp:list-entities nil "Walls" 100)`]);
+    expect(calls).toEqual([`(mcp:list-entities nil "Walls" 100 nil)`]);
+  });
+
+  test("renders the selection window with its mode", async () => {
+    const { calls } = await runTool(
+      "list_entities",
+      { window: { min: { x: 0, y: 0 }, max: { x: 10, y: 5 }, mode: "center" } },
+      () => [0, []],
+    );
+    expect(calls).toEqual([`(mcp:list-entities nil nil 100 (list 0.0 0.0 10.0 5.0 "center"))`]);
+  });
+
+  test("defaults the window mode to crossing", async () => {
+    const { calls } = await runTool(
+      "list_entities",
+      { window: { min: { x: 0, y: 0 }, max: { x: 10, y: 5 } } },
+      () => [0, []],
+    );
+    expect(calls).toEqual([`(mcp:list-entities nil nil 100 (list 0.0 0.0 10.0 5.0 "crossing"))`]);
   });
 });
 
@@ -155,7 +195,7 @@ describe("get_selected_entities", () => {
   test("reads the current selection", async () => {
     const { result, calls } = await runTool("get_selected_entities", {}, () => [
       1,
-      [["1F", "LWPOLYLINE", "Frames"]],
+      [["1F", "LWPOLYLINE", "Frames", null, null, null]],
     ]);
     expect(calls).toEqual([`(mcp:selected-entities 100)`]);
     expect(result).toEqual({
@@ -216,6 +256,150 @@ describe("erase_entities", () => {
   });
 });
 
+describe("copy_entities", () => {
+  test("copies with an offset and returns the new handles", async () => {
+    const { result, calls } = await runTool(
+      "copy_entities",
+      { handles: ["1F", "20"], offset: { x: 5, y: -2 } },
+      () => ["2A", "2B"],
+    );
+    expect(calls).toEqual([`(mcp:copy (list "1F" "20") (list 5.0 -2.0 0.0))`]);
+    expect(result).toEqual({ copied: 2, handles: ["2A", "2B"] });
+  });
+
+  test("defaults the offset to zero for copies in place", async () => {
+    const { calls } = await runTool("copy_entities", { handles: ["1F"] }, () => ["2A"]);
+    expect(calls).toEqual([`(mcp:copy (list "1F") (list 0.0 0.0 0.0))`]);
+  });
+});
+
+describe("zoom_window", () => {
+  test("zooms the viewport to the given window", async () => {
+    const { result, calls } = await runTool(
+      "zoom_window",
+      { min: { x: 0, y: 0 }, max: { x: 100, y: 50 } },
+      () => true,
+    );
+    expect(calls).toEqual([`(mcp:zoom-window (list 0.0 0.0 0.0) (list 100.0 50.0 0.0))`]);
+    expect(result).toEqual({ zoomed: true });
+  });
+});
+
+describe("capture_view", () => {
+  test("returns the captured image without touching the view by default", async () => {
+    const { result, calls } = await runTool("capture_view", {}, () => true);
+    expect(calls).toEqual([]);
+    expect(result).toBeInstanceOf(ImageResult);
+    if (result instanceof ImageResult) {
+      expect(result.data).toEqual(capturedBytes);
+      expect(result.mimeType).toBe("image/png");
+    }
+  });
+
+  test("zooms to the requested window before capturing", async () => {
+    const { calls } = await runTool(
+      "capture_view",
+      { window: { min: { x: 0, y: 0 }, max: { x: 10, y: 5 } } },
+      () => true,
+    );
+    expect(calls).toEqual([`(mcp:zoom-window (list 0.0 0.0 0.0) (list 10.0 5.0 0.0))`]);
+  });
+});
+
+describe("drawing_overview", () => {
+  test("maps counts, extents, and block usage", async () => {
+    const { result, calls } = await runTool("drawing_overview", {}, () => [
+      6,
+      [
+        ["LINE", 4],
+        ["CIRCLE", 2],
+      ],
+      [
+        ["0", 1],
+        ["Walls", 5],
+      ],
+      [
+        [0, 0, 0],
+        [200, 100, 0],
+      ],
+      [
+        ["Frame", 12, 2],
+        ["*U2", 30, 6],
+      ],
+    ]);
+    expect(calls).toEqual([`(mcp:drawing-overview)`]);
+    expect(result).toEqual({
+      totalEntities: 6,
+      entitiesByType: { LINE: 4, CIRCLE: 2 },
+      entitiesByLayer: { "0": 1, Walls: 5 },
+      extents: { min: [0, 0, 0], max: [200, 100, 0] },
+      blocks: [
+        { name: "Frame", entityCount: 12, instanceCount: 2 },
+        { name: "*U2", entityCount: 30, instanceCount: 6 },
+      ],
+    });
+  });
+
+  test("decodes an empty drawing", async () => {
+    const { result } = await runTool("drawing_overview", {}, () => [
+      0,
+      null,
+      null,
+      [
+        [0, 0, 0],
+        [0, 0, 0],
+      ],
+      null,
+    ]);
+    expect(result).toEqual({
+      totalEntities: 0,
+      entitiesByType: {},
+      entitiesByLayer: {},
+      extents: { min: [0, 0, 0], max: [0, 0, 0] },
+      blocks: [],
+    });
+  });
+});
+
+describe("get_block_definition", () => {
+  test("returns the base point and contained entities", async () => {
+    const { result, calls } = await runTool("get_block_definition", { name: "*U2" }, () => [
+      [0, 0, 0],
+      2,
+      [
+        [
+          "1A",
+          "LWPOLYLINE",
+          "0",
+          null,
+          [
+            [0, 0, 0],
+            [272, 384, 0],
+          ],
+          null,
+        ],
+        ["1B", "TEXT", "0", 7, null, "Формат A4"],
+      ],
+    ]);
+    expect(calls).toEqual([`(mcp:block-definition "*U2" 100)`]);
+    expect(result).toEqual({
+      name: "*U2",
+      basePoint: [0, 0, 0],
+      total: 2,
+      returned: 2,
+      entities: [
+        {
+          handle: "1A",
+          type: "LWPOLYLINE",
+          layer: "0",
+          boundingBox: { min: [0, 0, 0], max: [272, 384, 0] },
+        },
+        { handle: "1B", type: "TEXT", layer: "0", colorIndex: 7, text: "Формат A4" },
+      ],
+    });
+  });
+});
+
 describe("autocad_status", () => {
   test("shapes the status tuple", async () => {
     const { result } = await runTool("autocad_status", {}, () => [
@@ -246,11 +430,17 @@ describe("evaluate_lisp", () => {
 
 describe("failure propagation", () => {
   test("bridge failures surface as typed errors", async () => {
-    const failingLayer = Layer.succeed(
-      AutocadBridge,
-      AutocadBridge.make({
-        evaluate: () => Effect.fail(new LispEvaluationError({ message: "no entity" })),
-      }),
+    const failingLayer = Layer.merge(
+      Layer.succeed(
+        AutocadBridge,
+        AutocadBridge.make({
+          evaluate: () => Effect.fail(new LispEvaluationError({ message: "no entity" })),
+        }),
+      ),
+      Layer.succeed(
+        ViewCapture,
+        ViewCapture.make({ capture: () => Effect.succeed(capturedBytes) }),
+      ),
     );
     const exit = await Effect.runPromiseExit(
       findTool("zoom_extents").run({}).pipe(Effect.provide(failingLayer)),

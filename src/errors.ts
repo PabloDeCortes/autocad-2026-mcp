@@ -25,6 +25,10 @@ export class LispEvaluationError extends Data.TaggedError("LispEvaluationError")
   readonly message: string;
 }> {}
 
+export class CaptureError extends Data.TaggedError("CaptureError")<{
+  readonly message: string;
+}> {}
+
 export class ToolInputError extends Data.TaggedError("ToolInputError")<{
   readonly message: string;
 }> {}
@@ -36,7 +40,8 @@ export type BridgeError =
   | BridgeIoError
   | BridgeTimeoutError
   | BridgeResponseError
-  | LispEvaluationError;
+  | LispEvaluationError
+  | CaptureError;
 
 export const toolFailureMessage = (error: ToolInputError | BridgeError): string => {
   switch (error._tag) {
@@ -56,6 +61,8 @@ export const toolFailureMessage = (error: ToolInputError | BridgeError): string 
       return `Could not decode the AutoCAD response: ${error.message}`;
     case "LispEvaluationError":
       return `AutoLISP error: ${error.message}`;
+    case "CaptureError":
+      return `Screen capture failed: ${error.message}`;
     default:
       return absurd(error);
   }

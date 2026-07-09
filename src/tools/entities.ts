@@ -13,8 +13,10 @@ import {
 } from "../lisp";
 import {
   AngleDegrees,
+  Coordinates,
   EntityHandle,
   EntitySummary,
+  Limit,
   LispList,
   Point,
   decodeBridgeResult,
@@ -145,9 +147,23 @@ const createText = makeTool({
 
 const ListEntitiesResult = Schema.Tuple(Schema.Number, LispList(EntitySummary));
 
-const Limit = Schema.optionalWith(Schema.Int.pipe(Schema.positive()), { default: () => 100 });
-
 const Handles = Schema.NonEmptyArray(EntityHandle);
+
+const SelectionWindow = Schema.Struct({
+  min: Point.annotations({ description: "Lower-left corner of the window" }),
+  max: Point.annotations({ description: "Upper-right corner of the window" }),
+  mode: Schema.optionalWith(Schema.Literal("crossing", "inside", "center"), {
+    default: () => "crossing",
+  }).annotations({
+    description:
+      "How an entity bounding box must relate to the window: crossing = overlaps it, inside = fully within it, center = its center lies within it",
+  }),
+});
+
+const lispWindow = (window: typeof SelectionWindow.Type | undefined): string =>
+  window === undefined
+    ? "nil"
+    : `(list ${lispReal(window.min.x)} ${lispReal(window.min.y)} ${lispReal(window.max.x)} ${lispReal(window.max.y)} ${lispString(window.mode)})`;
 
 const summarizedEntities = (call: string) =>
   Effect.gen(function* () {
@@ -160,7 +176,7 @@ const summarizedEntities = (call: string) =>
 const listEntities = makeTool({
   name: "list_entities",
   description:
-    "List entities in the drawing with handle, DXF type, and layer. Optionally filter by DXF type names (comma separated, wildcards allowed, e.g. LINE,CIRCLE or *TEXT) and by layer name.",
+    "List entities in the drawing with handle, DXF type, layer, color index (absent means ByLayer), world-coordinate bounding box, and text content for text-bearing types. Optionally filter by DXF type names (comma separated, wildcards allowed, e.g. LINE,CIRCLE or *TEXT), by layer name, and by a rectangular window in world coordinates.",
   input: Schema.Struct({
     typeFilter: Schema.optional(
       Schema.NonEmptyString.annotations({
@@ -172,11 +188,16 @@ const listEntities = makeTool({
         description: "Layer name filter, wildcards allowed, e.g. Walls or Floor*",
       }),
     ),
+    window: Schema.optional(
+      SelectionWindow.annotations({
+        description: "Rectangular window that entities must fall into, in world coordinates",
+      }),
+    ),
     limit: Limit,
   }),
-  handler: ({ typeFilter, layerFilter, limit }) =>
+  handler: ({ typeFilter, layerFilter, window, limit }) =>
     summarizedEntities(
-      `(mcp:list-entities ${lispNilable(typeFilter, lispString)} ${lispNilable(layerFilter, lispString)} ${lispInteger(limit)})`,
+      `(mcp:list-entities ${lispNilable(typeFilter, lispString)} ${lispNilable(layerFilter, lispString)} ${lispInteger(limit)} ${lispWindow(window)})`,
     ),
 });
 
@@ -187,8 +208,6 @@ const getSelectedEntities = makeTool({
   input: Schema.Struct({ limit: Limit }),
   handler: ({ limit }) => summarizedEntities(`(mcp:selected-entities ${lispInteger(limit)})`),
 });
-
-const Coordinates = Schema.Tuple(Schema.Number, Schema.Number, Schema.Number);
 
 const BoundingBoxRecord = Schema.Tuple(Schema.String, Coordinates, Coordinates);
 
@@ -265,6 +284,27 @@ const eraseEntities = makeTool({
   handler: ({ handles }) => countedCall("erased", `(mcp:erase ${lispStringList(handles)})`),
 });
 
+const copyEntities = makeTool({
+  name: "copy_entities",
+  description:
+    "Copy entities, optionally displacing the copies by an offset vector. Returns the handles of the new copies in input order.",
+  input: Schema.Struct({
+    handles: Handles,
+    offset: Schema.optionalWith(Point.annotations({ description: "Displacement vector" }), {
+      default: () => ({ x: 0, y: 0, z: 0 }),
+    }),
+  }),
+  handler: ({ handles, offset }) =>
+    Effect.gen(function* () {
+      const bridge = yield* AutocadBridge;
+      const result = yield* bridge.evaluate(
+        `(mcp:copy ${lispStringList(handles)} ${lispPoint(offset)})`,
+      );
+      const copies = yield* decodeBridgeResult(LispList(Schema.String))(result);
+      return { copied: copies.length, handles: copies };
+    }),
+});
+
 const moveEntities = makeTool({
   name: "move_entities",
   description: "Move entities by a displacement vector. Returns how many were moved.",
@@ -315,6 +355,7 @@ export const entityTools: ReadonlyArray<Tool> = [
   getBoundingBox,
   getEntity,
   eraseEntities,
+  copyEntities,
   moveEntities,
   rotateEntities,
   scaleEntities,

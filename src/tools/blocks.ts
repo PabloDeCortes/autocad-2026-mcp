@@ -1,7 +1,15 @@
 import { Effect, Schema } from "effect";
 import { AutocadBridge } from "../bridge";
-import { lispPoint, lispReal, lispString } from "../lisp";
-import { AngleDegrees, LispList, Point, decodeBridgeResult } from "../schemas";
+import { lispInteger, lispPoint, lispReal, lispString } from "../lisp";
+import {
+  AngleDegrees,
+  Coordinates,
+  EntitySummary,
+  Limit,
+  LispList,
+  Point,
+  decodeBridgeResult,
+} from "../schemas";
 import { makeTool } from "./definition";
 import type { Tool } from "./definition";
 
@@ -15,6 +23,27 @@ const listBlocks = makeTool({
       const result = yield* bridge.evaluate(`(mcp:list-blocks)`);
       const blocks = yield* decodeBridgeResult(LispList(Schema.String))(result);
       return { blocks };
+    }),
+});
+
+const BlockDefinitionResult = Schema.Tuple(Coordinates, Schema.Number, LispList(EntitySummary));
+
+const getBlockDefinition = makeTool({
+  name: "get_block_definition",
+  description:
+    "Describe a block definition: its base point and the entities it contains, summarized like list_entities (in block-local coordinates). Works for anonymous blocks (names starting with *) too.",
+  input: Schema.Struct({
+    name: Schema.NonEmptyString.annotations({ description: "Block definition name" }),
+    limit: Limit,
+  }),
+  handler: ({ name, limit }) =>
+    Effect.gen(function* () {
+      const bridge = yield* AutocadBridge;
+      const result = yield* bridge.evaluate(
+        `(mcp:block-definition ${lispString(name)} ${lispInteger(limit)})`,
+      );
+      const [basePoint, total, entities] = yield* decodeBridgeResult(BlockDefinitionResult)(result);
+      return { name, basePoint, total, returned: entities.length, entities };
     }),
 });
 
@@ -39,4 +68,4 @@ const insertBlock = makeTool({
     }),
 });
 
-export const blockTools: ReadonlyArray<Tool> = [listBlocks, insertBlock];
+export const blockTools: ReadonlyArray<Tool> = [listBlocks, getBlockDefinition, insertBlock];

@@ -2,11 +2,13 @@ import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { Effect, Runtime } from "effect";
+import { Buffer } from "node:buffer";
 import process from "node:process";
 import packageJson from "../package.json";
-import { AutocadBridge } from "./bridge";
 import { toolFailureMessage } from "./errors";
 import { tools } from "./tools";
+import { ImageResult } from "./tools/definition";
+import type { ToolServices } from "./tools/definition";
 
 const toolList = tools.map((tool) => ({
   name: tool.name,
@@ -19,20 +21,36 @@ const textResult = (text: string, isError: boolean) => ({
   isError,
 });
 
+const imageResult = (image: ImageResult) => ({
+  content: [
+    {
+      type: "image" as const,
+      data: Buffer.from(image.data).toString("base64"),
+      mimeType: image.mimeType,
+    },
+  ],
+  isError: false,
+});
+
+const successResult = (result: unknown) =>
+  result instanceof ImageResult
+    ? imageResult(result)
+    : textResult(JSON.stringify(result, null, 2), false);
+
 const handleToolCall = (name: string, args: unknown) => {
   const tool = tools.find((candidate) => candidate.name === name);
   if (tool === undefined) {
     return Effect.succeed(textResult(`Unknown tool: ${name}`, true));
   }
   return tool.run(args).pipe(
-    Effect.map((result) => textResult(JSON.stringify(result, null, 2), false)),
+    Effect.map(successResult),
     Effect.catchAll((error) => Effect.succeed(textResult(toolFailureMessage(error), true))),
   );
 };
 
 export class AutocadMcp extends Effect.Service<AutocadMcp>()("AutocadMcp", {
   scoped: Effect.gen(function* () {
-    const runtime = yield* Effect.runtime<AutocadBridge>();
+    const runtime = yield* Effect.runtime<ToolServices>();
     const runPromise = Runtime.runPromise(runtime);
     const server = new Server(
       { name: packageJson.name, version: packageJson.version },

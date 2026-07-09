@@ -40,11 +40,34 @@ describe("BridgeResponse", () => {
 });
 
 describe("EntitySummary", () => {
-  test("maps the handle/type/layer triple to an object", () => {
-    expect(Schema.decodeUnknownSync(EntitySummary)(["1F", "LINE", "0"])).toEqual({
+  test("omits absent color, box, and text", () => {
+    expect(Schema.decodeUnknownSync(EntitySummary)(["1F", "LINE", "0", null, null, null])).toEqual({
       handle: "1F",
       type: "LINE",
       layer: "0",
+    });
+  });
+
+  test("maps color, bounding box, and text when present", () => {
+    expect(
+      Schema.decodeUnknownSync(EntitySummary)([
+        "20",
+        "MTEXT",
+        "Walls",
+        3,
+        [
+          [0, 0, 0],
+          [10, 5, 0],
+        ],
+        "hello",
+      ]),
+    ).toEqual({
+      handle: "20",
+      type: "MTEXT",
+      layer: "Walls",
+      colorIndex: 3,
+      boundingBox: { min: [0, 0, 0], max: [10, 5, 0] },
+      text: "hello",
     });
   });
 });
